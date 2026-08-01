@@ -5,10 +5,12 @@
   "main": "src/index.js",
   "type": "commonjs",
   "bin": {
-    "screencye": "src/cli.js"
+    "screencye": "src/cli.js",
+    "screencye-mcp": "src/server.mjs"
   },
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/cli.js",
+    "mcp": "node src/server.mjs",
     "cli": "node src/cli.js",
     "test": "node test/run-tests.js"
   },
@@ -31,6 +33,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@oovz/esearch-ocr": "^8.4.4",
     "canvas": "^3.2.3",
-    "onnxruntime-node": "^1.27.0"
+    "onnxruntime-node": "^1.27.0",
+    "zod": "^4.4.3"
   }
 }
