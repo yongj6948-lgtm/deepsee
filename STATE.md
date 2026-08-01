@@ -32,6 +32,7 @@ Every decoder change → update BOTH, test BOTH. A change in only one = a bug.
 ## Repos & key commits
 ```
 Music\screencye-mcp\        git log:
+  50e7d82 docs: STATE.md
   3ece7c6 feat: FRAME detection (plugin)
   398ae8b feat: agent-grabbing tool description
   149a814 docs: README + MIT
@@ -44,6 +45,26 @@ Music\screenshot-reader\     git log:
   dcb591a feat: FRAME detection (sync)
   7e41431 baseline
 ```
+
+## AUDIT FINDINGS (2026-08-01, from adversarial 6-agent review — NOT yet fixed)
+Two decoders confirmed faithful 1:1 (all constants match). Real defects + footguns to fix:
+
+**🔴 HIGH (2 defects, confirmed):**
+1. `screencye-mcp/package.json` "main": "src/index.js" is DANGLING — file doesn't exist. Any `require('screencye-mcp')` throws. Fix: tiny CommonJS `src/index.js` re-export, or remove main.
+2. Design spec file structure is stale — lists `src/index.js`, `src/transcript.js`, `test/fixtures/` that don't exist. Real layout: entry is `src/server.mjs`, transcript inline in decoder.js (`renderTranscript`), golden PNGs in sibling browser repo `test/out/`.
+
+**🟠 MEDIUM footguns (matter for future edits):**
+3. Downscale divergence >1400px — browser (Chrome) vs node (Cairo) scaling filters differ → boxes can diverge on big images. ≤1400px guaranteed identical. No cross-file test covers >1400px.
+4. **No automated cross-file parity test** — only 2 fixtures in Node suite. One-sided edit silently diverges. #1 safety gap.
+5. Golden PNGs are git-ignored (browser test/out) — fresh clone → npm test fails file-not-found. Tests depend on browser run-test.js having run first.
+6. `config.js` hardcodes `..\..\screenshot-reader\models` — works only because repos are siblings. npm install -g / move breaks it.
+7. All constants duplicated verbatim in both decoders, no shared constants module. Tuning one breaks parity silently.
+8. Spec's sample transcript format is outdated (shows HEADING/LABEL/value; real emits BOX/BUTTON/INPUT/CARD/FRAME + fill/border/text).
+
+**🟡 LOW:** `sampleTextColor` excludeHex param unused in both (identical); dead `scale` param in browser classifyAndAttach; test helpers not wired into npm test (intentional); phone-emulator FRAME gap affects both identically.
+
+**The constant register (change in BOTH files if touched):**
+COLOR_TOL 14 · MIN_BOX_AREA_RATIO 0.0025 · MAX_ANALYSIS_DIM 1400 · GRADIENT_MERGE_COLOR_TOL 40 / EDGE_TOL 60 · Sobel >120 · borderRatio 0.4/0.5 · fillRatio 0.55 · IoU 0.6 / (0.3+0.5) · lum+60/sat>45 · colorDist<24.
 
 ## How to run
 - Plugin: `cd Music\screencye-mcp && node src/cli.js <image>` or MCP server `node src/server.mjs`
