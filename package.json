@@ -1,0 +1,36 @@
+{
+  "name": "screencye-mcp",
+  "version": "0.1.0",
+  "description": "Eyes for text-only LLMs. Decode screenshots into exact structured text (words, coordinates, sizes, colors, spacing) via pure-code CV + OCR — zero VRAM, no vision model needed. MCP server for Claude Code / Hermes / agents.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "bin": {
+    "screencye": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "cli": "node src/cli.js",
+    "test": "node test/run-tests.js"
+  },
+  "keywords": [
+    "mcp",
+    "ocr",
+    "screenshot",
+    "computer-use",
+    "paddleocr",
+    "onnx",
+    "vision",
+    "agent"
+  ],
+  "author": "VELOCE AI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "canvas": "^3.0.0",
+    "onnxruntime-node": "^1.21.0"
+  },
+  "devDependencies": {}
+}
