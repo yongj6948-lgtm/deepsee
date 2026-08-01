@@ -66,17 +66,18 @@ The browser `decode.js` uses DOM APIs that don't exist in Node. The **logic tran
 screencye-mcp/
 ├── package.json
 ├── src/
-│   ├── index.js        — MCP server entry (stdio)
+│   ├── index.js        — public package entry (re-exports decoder API + modelPath)
 │   ├── cli.js          — CLI mode (decode a file, print transcript)
 │   ├── config.js       — model dir resolution (env var → own → shared)
-│   ├── decoder.js      — Node port of the 5-pass decoder
-│   └── transcript.js   — transcript rendering (ported)
+│   ├── decoder.js      — Node port of the 5-pass decoder (transcript rendering inline)
+│   └── server.mjs      — MCP stdio server (ESM), tool `decode_screenshot`
 ├── models/             — optional local copy; else shared from ../screenshot-reader/models
 ├── docs/
 │   └── superpowers/specs/
 └── test/
-    ├── fixtures/       — golden screenshots
-    └── run-tests.js
+    ├── run-tests.js            — golden transcript tests (fixtures from ../screenshot-reader/test/out)
+    ├── mcp-handshake-test.mjs  — full MCP handshake test
+    └── mcp-client-test.mjs     — quick MCP stdio test
 ```
 
 ## 7. Privacy & Deployment
