@@ -234,8 +234,13 @@ function findBoxes(imgData, scale) {
     const rg = merged[r];
     const boxArea = rg.boxW * rg.boxH;
     if (boxArea < MIN_BOX_AREA_RATIO * totalArea) continue;
-    if (rg.fillRatio < 0.55) continue;
     if (rg.boxW === w && rg.boxH === h) continue;
+    // Hollow = the region's bounding box is much bigger than its own area,
+    // i.e. it wraps a "hole" (a screen, an inner panel). Solid regions are
+    // kept outright; hollow regions are kept as FRAME candidates (classified
+    // later, only if they actually enclose another element). This catches
+    // borders drawn by a color boundary (phone emulator) — no drawn line needed.
+    const isHollow = rg.fillRatio < 0.55;
     boxes.push({
       x: Math.round(rg.minX / scale),
       y: Math.round(rg.minY / scale),
@@ -243,7 +248,8 @@ function findBoxes(imgData, scale) {
       h: Math.round(rg.boxH / scale),
       fillRatio: rg.fillRatio,
       borderRatio: rg.borderRatio,
-      area: boxArea / (scale * scale)
+      area: boxArea / (scale * scale),
+      hollow: isHollow
     });
   }
 
@@ -442,6 +448,21 @@ function containsItem(box, item) {
 }
 
 function refineKind(b) {
+  // FRAME = a region that WRAPS content and is HOLLOW — its own area is much
+  // smaller than its bounding box (fillRatio low), meaning it's a casing /
+  // bezel around a "hole" of content (a phone emulator screen, a browser
+  // window). The border may be:
+  //  (a) a color boundary (black screen ends, red frame begins) — no line
+  //  (b) a drawn border line — still captured as the "· bordered" annotation
+  //      below; both cases have the same hollow shape.
+  // A solid region (high fillRatio) is a CARD, not a frame. Requiring the
+  // region to be large + hollow + wrapping content separates a frame from a
+  // thin strip / title bar / search box.
+  const wrapsContent = b.boxChildren.length > 0 || b.children.length > 0;
+  const isHollow = b.fillRatio !== undefined && b.fillRatio < 0.55 && b.area > 0;
+  const isBigEnough = b.area > 0.01 * (b.w * b.h); // not a speck
+  if (wrapsContent && isHollow && isBigEnough) { b.kind = 'frame'; return; }
+
   if (b.boxChildren.length > 0) { b.kind = 'card'; return; }
   if (b.children.length === 0) {
     if (b.w > b.h * 2 && b.borderRatio > 0.5) b.kind = 'input';
@@ -725,6 +746,7 @@ function kindLabel(kind) {
     case 'button': return 'BUTTON';
     case 'input': return 'INPUT';
     case 'card': return 'CARD';
+    case 'frame': return 'FRAME';
     default: return 'BOX';
   }
 }
