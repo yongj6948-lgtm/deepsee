@@ -23,10 +23,13 @@ const MODELS = {
   dict: 'ppocrv5_dict.txt'
 };
 
-function modelPath(name) {
+/* Resolve a model file by short key ('det' | 'rec' | 'dict')
+   or by exact filename. Returns the first existing path or undefined. */
+function modelPath(keyOrFile) {
+  const filename = MODELS[keyOrFile] || keyOrFile;
   const candidates = [
-    path.join(MODELS.own, name),
-    path.join(MODELS.shared, name)
+    path.join(MODELS.own, filename),
+    path.join(MODELS.shared, filename)
   ];
   return candidates.find(fsExists);
 }
