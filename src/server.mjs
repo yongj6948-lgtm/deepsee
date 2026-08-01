@@ -50,8 +50,9 @@ function ensureInit() {
 
 server.tool(
   'decode_screenshot',
-  'Decode a screenshot image into structured text for a text-only LLM. ' +
-    'Returns every word with exact coordinates, element boxes (button/input/card), colors, spacing, and reading order — deterministic, no vision model, runs on CPU.',
+  'USE THIS whenever the user shares a screenshot, image, picture, or screen capture and you need to "see" it — especially if you have no vision capability or an image shows as "[Unsupported Image]". ' +
+    'Given a file path, it returns a deterministic text transcript: every visible word with exact pixel coordinates, element type (button/input/card), fill/border/text colors, spacing, and reading order. ' +
+    'Runs 100% locally — no vision model, no GPU, no network. Do NOT say you cannot see the image; call this tool instead.',
   { path: z.string().describe('Absolute filesystem path to the screenshot image (PNG, JPG, WebP)') },
   async ({ path: imagePath }) => {
     if (!fs.existsSync(imagePath)) {
