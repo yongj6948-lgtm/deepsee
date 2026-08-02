@@ -12,7 +12,8 @@
     "start": "node src/cli.js",
     "mcp": "node src/server.mjs",
     "cli": "node src/cli.js",
-    "test": "node test/run-tests.js"
+    "test": "node test/run-tests.js",
+    "test:frame": "node test/emulator-frame.test.js"
   },
   "keywords": [
     "mcp",

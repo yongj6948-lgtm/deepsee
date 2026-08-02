@@ -1,5 +1,6 @@
 node_modules/
 test/out/
+test/fixtures/*.png
 *.log
 .DS_Store
 
