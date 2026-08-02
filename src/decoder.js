@@ -137,18 +137,12 @@ function buildTranscript(lines, sample) {
    P3 — LAYOUT DETECTION (pure pixel code)
    ================================================================= */
 function findBoxes(imgData, scale) {
-  let W = imgData.width;
-  let H = imgData.height;
   if (scale < 1) {
-    // Downscale working copy for analysis (canvas pkg, not DOM).
-    const srcCanvas = createCanvas(W, H);
-    const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
-    srcCtx.putImageData(imgData, 0, 0);
-
-    const small = createCanvas(Math.round(W * scale), Math.round(H * scale));
-    const sctx = small.getContext('2d', { willReadFrequently: true });
-    sctx.drawImage(srcCanvas, 0, 0, W, H, 0, 0, small.width, small.height);
-    imgData = sctx.getImageData(0, 0, small.width, small.height);
+    // Deterministic area-average downscale (pure JS, no canvas resize) so
+    // the browser and Node decoders produce identical analysis pixels on
+    // large screenshots (> MAX_ANALYSIS_DIM). Canvas drawImage resamples
+    // differently between Blink and node-canvas (Cairo).
+    imgData = downscaleImageData(imgData, scale);
   }
 
   const w = imgData.width;
@@ -254,6 +248,43 @@ function findBoxes(imgData, scale) {
   }
 
   return dedupeNested(boxes);
+}
+
+/* Deterministic area-average (box-filter) downscale.
+   Used instead of canvas drawImage so the analysis pixels are identical
+   across environments (browser canvas vs node-canvas resample differently).
+   Returns an ImageData-like { width, height, data }. */
+function downscaleImageData(imgData, scale) {
+  const srcW = imgData.width;
+  const srcH = imgData.height;
+  const dstW = Math.max(1, Math.round(srcW * scale));
+  const dstH = Math.max(1, Math.round(srcH * scale));
+  const src = imgData.data;
+  const dst = new Uint8ClampedArray(dstW * dstH * 4);
+  for (let y = 0; y < dstH; y++) {
+    const sy0 = Math.floor(y / scale);
+    const sy1 = Math.min(srcH, Math.floor((y + 1) / scale));
+    for (let x = 0; x < dstW; x++) {
+      const sx0 = Math.floor(x / scale);
+      const sx1 = Math.min(srcW, Math.floor((x + 1) / scale));
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0; sx < sx1; sx++) {
+          const i = (sy * srcW + sx) * 4;
+          r += src[i]; g += src[i + 1]; b += src[i + 2]; a += src[i + 3];
+          n++;
+        }
+      }
+      if (n > 0) {
+        const o = (y * dstW + x) * 4;
+        dst[o] = r / n;
+        dst[o + 1] = g / n;
+        dst[o + 2] = b / n;
+        dst[o + 3] = a / n;
+      }
+    }
+  }
+  return { width: dstW, height: dstH, data: dst };
 }
 
 /* Fraction of a region's perimeter that sits on a strong edge. */
