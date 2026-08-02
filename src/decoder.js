@@ -223,7 +223,7 @@ function findBoxes(imgData, scale) {
 
   // ── 3.3 Filter: rectangular solid regions, not whole page ──
   const totalArea = w * h;
-  const boxes = [];
+  let boxes = [];
   for (let r = 0; r < merged.length; r++) {
     const rg = merged[r];
     const boxArea = rg.boxW * rg.boxH;
@@ -247,7 +247,19 @@ function findBoxes(imgData, scale) {
     });
   }
 
-  return dedupeNested(boxes);
+  boxes = dedupeNested(boxes);
+  // Screen/FRAME outline detection (edge-based, color-agnostic): finds large
+  // strongly-outlined rectangles that enclose content even when the border
+  // ring is thin/low-contrast and gradientMerge absorbed it into the page.
+  boxes = dedupeNested(boxes.concat(findScreenOutlines(data, w, h, boxes, scale)));
+  // Color-surface fallback: a screen whose boundary is too subtle for edges
+  // (e.g. a blue-dark phone screen on a black-gray IDE) but whose uniform
+  // surface color still differs from the surrounding page. The screen's
+  // background color may be fragmented by content (a card grid), so the whole
+  // image is clustered by color and the union bbox of each dominant color's
+  // pixels reconstructs the screen.
+  boxes = dedupeNested(boxes.concat(findColorScreens(data, w, h, boxes, scale)));
+  return boxes;
 }
 
 /* Deterministic area-average (box-filter) downscale.
@@ -406,6 +418,513 @@ function dedupeNested(boxes) {
     if (!dup) kept.push(b);
   }
   return kept;
+}
+
+/* =================================================================
+   SCREEN / FRAME OUTLINE DETECTION (edge-based, color-agnostic)
+   ================================================================= */
+
+/* A phone-emulator (or any framed window) that sits on a page has a thin
+   border ring. If that ring is dark/low-contrast and a gradient, flood fill +
+   gradientMerge absorb it into the background, so it never becomes a region
+   for refineKind to label FRAME. Instead, detect the rectangle whose PERIMETER
+   sits on strong edges and which ENCLOSES dense content — the ring's inner
+   edge (dark ring -> lighter screen) is exactly such an edge, whatever the
+   ring's color. This pass synthesizes hollow FRAME-candidate boxes from it.
+
+   Runs at analysis scale and returns boxes in ORIGINAL coords (÷scale). */
+
+const SCREEN_EDGE_T = 120;                 // strong-edge threshold (full-RGB Sobel)
+const SCREEN_MIN_SIZE_FRAC = 0.07;         // min run length for candidate edges, fraction of analysis dims
+const SCREEN_MIN_AREA_FRAC = 0.08;         // min screen area as fraction of the image (a screen is a LARGE region)
+const SCREEN_COVER = 0.50;                 // min strong-edge coverage for a horizontal (top/bottom) side
+const SCREEN_VCOVER = 0.30;                // min strong-edge coverage for a vertical (left/right) side
+const SCREEN_MIN_ASPECT = 0.30;            // min H/W (portrait phone)
+const SCREEN_MAX_ASPECT = 3.30;            // max H/W (landscape phone)
+const SCREEN_CONTENT_EDGE_DENSITY = 0.003; // min strong-edge density inside the rect
+const SCREEN_IOU_GATE = 0.40;              // skip if an existing box overlaps ~same area
+const SCREEN_SIDE_TOL = 2;                 // ±px window when measuring a side's coverage
+const SCREEN_RUN_GAP = 4;                  // merge strong runs ≤ this gap (real edges have antialiasing gaps)
+const MAX_HEDGES = 600;                    // cap on candidate edges per axis
+const SCREEN_COLOR_DIFF = 10;              // color-surface: min color distance between the screen and the page
+const SCREEN_COLOR_TOL_CLUSTER = 12;       // color-surface: tolerance when matching pixels to a dominant color
+const SCREEN_FILL_MIN = 0.25;              // color-surface: min fraction of the bbox covered by the surface color
+const SCREEN_CELL_DENSITY = 0.30;          // color-surface: min fraction of a grid cell that must be the surface color
+const SCREEN_MERGE_GAP_CELLS = 3;          // color-surface: max vertical gap (cells) to merge stacked screen blocks
+const SCREEN_COLOR_IOU = 0.75;             // color-surface: only suppress if MOSTLY overlapping (a partial edge-frame shouldn't)
+
+/* Full-RGB Sobel magnitude per pixel — max gradient across R/G/B channels, so
+   the detector keys on brightness contrast, not on any one hue. */
+function screenEdgeMap(data, w, h) {
+  const n = w * h;
+  const out = new Float32Array(n);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      let best = 0;
+      for (let ch = 0; ch < 3; ch++) {
+        const o = i + ch;
+        const gx = -data[o - 4 - w * 4] + data[o + 4 - w * 4]
+                   - 2 * data[o - 4] + 2 * data[o + 4]
+                   - data[o - 4 + w * 4] + data[o + 4 + w * 4];
+        const gy = -data[o - w * 4 - 4] - 2 * data[o - w * 4] - data[o - w * 4 + 4]
+                   + data[o + w * 4 - 4] + 2 * data[o + w * 4] + data[o + w * 4 + 4];
+        const m = gx * gx + gy * gy;
+        if (m > best) best = m;
+      }
+      out[(i / 4) | 0] = Math.sqrt(best);
+    }
+  }
+  return out;
+}
+
+function findScreenOutlines(data, w, h, boxes, scale) {
+  const minW = Math.round(w * SCREEN_MIN_SIZE_FRAC);
+  const minH = Math.round(h * SCREEN_MIN_SIZE_FRAC);
+  if (minW < 20 || minH < 20) return [];
+
+  const edges = screenEdgeMap(data, w, h);
+
+  // Strong-edge bitmap.
+  const n = w * h;
+  const strong = new Uint8Array(n);
+  for (let i = 0; i < n; i++) strong[i] = edges[i] > SCREEN_EDGE_T ? 1 : 0;
+
+  // 2D integral image (prefix sums), (w+1)×(h+1), index y*(w+1)+x.
+  const IW = w + 1;
+  const intIm = new Int32Array((h + 1) * IW);
+  for (let y = 0; y < h; y++) {
+    let rowSum = 0;
+    const cur = (y + 1) * IW;
+    const prev = y * IW;
+    for (let x = 0; x < w; x++) {
+      rowSum += strong[y * w + x];
+      intIm[cur + x + 1] = intIm[prev + x + 1] + rowSum;
+    }
+  }
+  const rectSum = function (x0, y0, x1, y1) {
+    if (x1 < x0 || y1 < y0) return 0;
+    const x0c = Math.max(0, x0), y0c = Math.max(0, y0);
+    const x1c = Math.min(w - 1, x1), y1c = Math.min(h - 1, y1);
+    if (x1c < x0c || y1c < y0c) return 0;
+    const a = intIm[(y1c + 1) * IW + (x1c + 1)];
+    const b = intIm[y0c * IW + (x1c + 1)];
+    const c = intIm[(y1c + 1) * IW + x0c];
+    const d = intIm[y0c * IW + x0c];
+    return a - b - c + d;
+  };
+
+  // Best strong coverage of a horizontal side [l..r] at row y, over ±SCREEN_SIDE_TOL.
+  const rowCov = function (l, r, y) {
+    const len = r - l + 1;
+    if (len <= 0) return 0;
+    let best = 0;
+    for (let dy = -SCREEN_SIDE_TOL; dy <= SCREEN_SIDE_TOL; dy++) {
+      const yy = y + dy;
+      if (yy < 0 || yy >= h) continue;
+      const c = rectSum(l, yy, r, yy) / len;
+      if (c > best) best = c;
+    }
+    return best;
+  };
+  const colCov = function (t, b, x) {
+    const len = b - t + 1;
+    if (len <= 0) return 0;
+    let best = 0;
+    for (let dx = -SCREEN_SIDE_TOL; dx <= SCREEN_SIDE_TOL; dx++) {
+      const xx = x + dx;
+      if (xx < 0 || xx >= w) continue;
+      const c = rectSum(xx, t, xx, b) / len;
+      if (c > best) best = c;
+    }
+    return best;
+  };
+
+  // Candidate horizontal edges: strong runs ≥ minW, small antialiasing gaps
+  // tolerated (merged), capped.
+  const hEdges = [];
+  outer:
+  for (let y = 0; y < h; y++) {
+    let x = 0;
+    while (x < w) {
+      while (x < w && !strong[y * w + x]) x++;
+      if (x >= w) break;
+      const l = x;
+      let r = x;
+      let gap = 0;
+      while (r + 1 < w) {
+        if (strong[y * w + (r + 1)]) { r++; gap = 0; }
+        else { gap++; if (gap > SCREEN_RUN_GAP) break; r++; }
+      }
+      x = r + 1;
+      if (r - l + 1 >= minW) {
+        hEdges.push({ y: y, l: l, r: r });
+        if (hEdges.length >= MAX_HEDGES) break outer;
+      }
+    }
+  }
+
+  // Candidate vertical edges: strong column runs ≥ minH, gaps tolerated, capped.
+  const vEdges = [];
+  outerV:
+  for (let x = 0; x < w; x++) {
+    let y = 0;
+    while (y < h) {
+      while (y < h && !strong[y * w + x]) y++;
+      if (y >= h) break;
+      const t = y;
+      let b = y;
+      let gap = 0;
+      while (b + 1 < h) {
+        if (strong[(b + 1) * w + x]) { b++; gap = 0; }
+        else { gap++; if (gap > SCREEN_RUN_GAP) break; b++; }
+      }
+      y = b + 1;
+      if (b - t + 1 >= minH) {
+        vEdges.push({ x: x, t: t, b: b });
+        if (vEdges.length >= MAX_HEDGES) break outerV;
+      }
+    }
+  }
+
+  const overlapsAny = function (cand, list) {
+    for (let i = 0; i < list.length; i++) {
+      const k = list[i];
+      const interW = Math.max(0, Math.min(cand.x + cand.w, k.x + k.w) - Math.max(cand.x, k.x));
+      const interH = Math.max(0, Math.min(cand.y + cand.h, k.y + k.h) - Math.max(cand.y, k.y));
+      const inter = interW * interH;
+      if (inter === 0) continue;
+      const iou = inter / (cand.area + k.area - inter);
+      if (iou > SCREEN_IOU_GATE) return true;
+    }
+    return false;
+  };
+
+  const results = [];
+  const accepts = [];
+  const emit = function (L, T, R, B, br) {
+    const cand = {
+      x: Math.round(L / scale),
+      y: Math.round(T / scale),
+      w: Math.round((R - L + 1) / scale),
+      h: Math.round((B - T + 1) / scale),
+      area: ((R - L + 1) * (B - T + 1)) / (scale * scale),
+      fillRatio: 0.30,                       // hollow → refineKind can FRAME it
+      borderRatio: br,
+      hollow: true
+    };
+    if (overlapsAny(cand, boxes)) return;
+    if (overlapsAny(cand, accepts)) return;
+    accepts.push(cand);
+    results.push(cand);
+  };
+  const areaMin = SCREEN_MIN_AREA_FRAC * w * h;
+  const interiorDense = function (L, T, R, B) {
+    const ix0 = L + 3, iy0 = T + 3, ix1 = R - 3, iy1 = B - 3;
+    const iArea = (ix1 - ix0 + 1) * (iy1 - iy0 + 1);
+    if (iArea <= 0) return false;
+    return rectSum(ix0, iy0, ix1, iy1) / iArea >= SCREEN_CONTENT_EDGE_DENSITY;
+  };
+
+  // ---- Horizontal-anchored: a strong top AND bottom edge ----
+  // (clean framed windows: browser/app windows, editor tabs)
+  for (let ti = 0; ti < hEdges.length; ti++) {
+    const T = hEdges[ti];
+    for (let bi = ti + 1; bi < hEdges.length; bi++) {
+      const B = hEdges[bi];
+      if (B.y <= T.y) continue;
+      const hgt = B.y - T.y + 1;
+      if (hgt < minH) continue;
+      const L = Math.max(T.l, B.l);
+      const R = Math.min(T.r, B.r);
+      const wid = R - L + 1;
+      if (wid < minW) continue;
+      if (wid * hgt < areaMin) continue;
+      const aspect = hgt / wid;
+      if (aspect < SCREEN_MIN_ASPECT || aspect > SCREEN_MAX_ASPECT) continue;
+
+      const tC = rowCov(L, R, T.y);
+      const bC = rowCov(L, R, B.y);
+      const lC = colCov(T.y, B.y, L);
+      const rC = colCov(T.y, B.y, R);
+      if (tC < SCREEN_COVER || bC < SCREEN_COVER) continue;
+      if (lC < SCREEN_VCOVER && rC < SCREEN_VCOVER) continue;
+      if (!interiorDense(L, T.y, R, B.y)) continue;
+
+      emit(L, T.y, R, B.y, (tC + bC + lC + rC) / 4);
+    }
+  }
+
+  // ---- Vertical-anchored: a strong left AND right edge ----
+  // (an emulator/docked screen whose top/bottom touch the surrounding window,
+  // so only the vertical ring sides are visible). The rectangle's vertical
+  // extent is the overlap of the two side runs; one horizontal side suffices.
+  for (let li = 0; li < vEdges.length; li++) {
+    const VL = vEdges[li];
+    for (let ri = li + 1; ri < vEdges.length; ri++) {
+      const VR = vEdges[ri];
+      if (VR.x <= VL.x) continue;
+      const L = VL.x, R = VR.x, wid = R - L + 1;
+      if (wid < minW) continue;
+      const T = Math.max(VL.t, VR.t), B = Math.min(VL.b, VR.b);
+      const hgt = B - T + 1;
+      if (hgt < minH) continue;
+      if (wid * hgt < areaMin) continue;
+      const aspect = hgt / wid;
+      if (aspect < SCREEN_MIN_ASPECT || aspect > SCREEN_MAX_ASPECT) continue;
+
+      const lC = colCov(T, B, L);
+      const rC = colCov(T, B, R);
+      if (lC < SCREEN_VCOVER || rC < SCREEN_VCOVER) continue;
+      const tC = rowCov(L, R, T);
+      const bC = rowCov(L, R, B);
+      if (tC < SCREEN_COVER && bC < SCREEN_COVER) continue;
+      if (!interiorDense(L, T, R, B)) continue;
+
+      emit(L, T, R, B, (lC + rC + tC + bC) / 4);
+    }
+  }
+
+  return results;
+}
+
+/* =================================================================
+   COLOR-SURFACE SCREEN DETECTION (fallback for subtle boundaries)
+   ================================================================= */
+
+/* True if `cand` overlaps any box in `list` with IoU > thresh (original coords). */
+function overlapsAnyBox(cand, list, thresh) {
+  for (let i = 0; i < list.length; i++) {
+    const k = list[i];
+    const interW = Math.max(0, Math.min(cand.x + cand.w, k.x + k.w) - Math.max(cand.x, k.x));
+    const interH = Math.max(0, Math.min(cand.y + cand.h, k.y + k.h) - Math.max(cand.y, k.y));
+    const inter = interW * interH;
+    if (inter === 0) continue;
+    const iou = inter / (cand.area + k.area - inter);
+    if (iou > thresh) return true;
+  }
+  return false;
+}
+
+/* Dominant actual color inside a bbox (sampled every 2px for speed). */
+function sampleDominantColor(data, w, h, x0, y0, x1, y1) {
+  const hist = {};
+  for (let y = y0; y <= y1; y += 2) {
+    for (let x = x0; x <= x1; x += 2) {
+      if (x < 0 || x >= w || y < 0 || y >= h) continue;
+      const i = (y * w + x) * 4;
+      const key = (data[i] >> 4) + ',' + (data[i + 1] >> 4) + ',' + (data[i + 2] >> 4);
+      if (!hist[key]) hist[key] = { c: 0, r: data[i], g: data[i + 1], b: data[i + 2] };
+      hist[key].c++;
+    }
+  }
+  let best = null;
+  Object.keys(hist).forEach(function (k) { if (!best || hist[k].c > best.c) best = hist[k]; });
+  return best;
+}
+
+/* Dominant color of the thin band just OUTSIDE a region's bbox (the "page"). */
+function sampleSurroundColor(data, w, h, minX, minY, maxX, maxY) {
+  const hist = {};
+  const band = 4;
+  let count = 0;
+  function add(x, y) {
+    if (x < 0 || x >= w || y < 0 || y >= h) return;
+    const i = (y * w + x) * 4;
+    const key = (data[i] >> 4) + ',' + (data[i + 1] >> 4) + ',' + (data[i + 2] >> 4);
+    if (!hist[key]) hist[key] = { c: 0, r: data[i], g: data[i + 1], b: data[i + 2] };
+    hist[key].c++;
+    count++;
+  }
+  for (let x = minX; x <= maxX; x++) {
+    for (let dy = 1; dy <= band; dy++) { add(x, minY - dy); add(x, maxY + dy); }
+  }
+  for (let y = minY; y <= maxY; y++) {
+    for (let dx = 1; dx <= band; dx++) { add(minX - dx, y); add(maxX + dx, y); }
+  }
+  if (count === 0) return null;
+  let best = null;
+  Object.keys(hist).forEach(function (k) {
+    if (!best || hist[k].c > best.c) best = hist[k];
+  });
+  return best;
+}
+
+/* Find screens by COLOR, as a fallback for boundaries too subtle for edge
+   detection (e.g. a blue-dark phone screen on a black-gray IDE, ~19 color
+   distance). The screen's background color can be fragmented by content (a
+   card grid splits it into many pieces), so instead of looking for one uniform
+   region we:
+     1. histogram the whole image to find dominant colors,
+     2. for each dominant color take the UNION bbox of all its pixels (this
+        reconstructs the screen even when the color is scattered),
+     3. require the bbox to be screen-sized, the color to cover a decent
+        fraction of it, and the color to differ from the surrounding page.
+   A candidate is IoU-gated against already-detected boxes (flood-fill CARDs +
+   edge frames), so it only "speaks up" when nobody else found the screen. */
+function findColorScreens(data, w, h, boxes, scale) {
+  const total = w * h;
+  const results = [];
+  const matchTol2 = SCREEN_COLOR_TOL_CLUSTER * SCREEN_COLOR_TOL_CLUSTER;
+
+  // 1. Quantized color histogram (5 bits/channel), sorted by frequency.
+  const hist = {};
+  for (let i = 0; i < total; i++) {
+    const r = data[i * 4] >> 3, g = data[i * 4 + 1] >> 3, b = data[i * 4 + 2] >> 3;
+    const key = (r << 10) | (g << 5) | b;
+    hist[key] = (hist[key] || 0) + 1;
+  }
+  const entries = Object.keys(hist).map(function (k) {
+    const key = parseInt(k, 10);
+    return { count: hist[k], r: ((key >> 10) & 31) << 3, g: ((key >> 5) & 31) << 3, b: (key & 31) << 3 };
+  }).sort(function (a, b) { return b.count - a.count; });
+  const topN = Math.min(7, entries.length);
+  const page = entries[0];                       // page background = most common color
+
+  // Coarse density grid: cells that are mostly this color form the screen even
+  // when content (a card grid) splits the color into disconnected pixel runs.
+  const G = 24;
+  const cellW = w / G, cellH = h / G;
+  const cellArea = cellW * cellH;
+  const gridN = G * G;
+  const IW = w + 1;
+
+  for (let e = 0; e < topN; e++) {
+    const ent = entries[e];
+    if (ent.count < 0.03 * total) continue;
+    // The surface color must differ from the page background color (this also
+    // rejects the page itself and shade-of-page panels).
+    const pd = Math.sqrt((ent.r - page.r) * (ent.r - page.r) + (ent.g - page.g) * (ent.g - page.g) + (ent.b - page.b) * (ent.b - page.b));
+    if (pd < SCREEN_COLOR_DIFF) continue;
+
+    // 2. Mask of pixels near this color + 2D integral image.
+    const mask = new Uint8Array(total);
+    for (let i = 0; i < total; i++) {
+      const dr = data[i * 4] - ent.r, dg = data[i * 4 + 1] - ent.g, db = data[i * 4 + 2] - ent.b;
+      mask[i] = (dr * dr + dg * dg + db * db <= matchTol2) ? 1 : 0;
+    }
+    const intIm = new Int32Array((h + 1) * IW);
+    for (let y = 0; y < h; y++) {
+      let rs = 0;
+      const cur = (y + 1) * IW, prev = y * IW;
+      for (let x = 0; x < w; x++) {
+        rs += mask[y * w + x];
+        intIm[cur + x + 1] = intIm[prev + x + 1] + rs;
+      }
+    }
+    const rectSum = function (x0, y0, x1, y1) {
+      if (x1 < x0 || y1 < y0) return 0;
+      x0 = Math.max(0, x0); y0 = Math.max(0, y0);
+      x1 = Math.min(w - 1, x1); y1 = Math.min(h - 1, y1);
+      if (x1 < x0 || y1 < y0) return 0;
+      return intIm[(y1 + 1) * IW + (x1 + 1)] - intIm[y0 * IW + (x1 + 1)] - intIm[(y1 + 1) * IW + x0] + intIm[y0 * IW + x0];
+    };
+
+    // 3. Cell density grid → surface cells.
+    const cells = new Float32Array(gridN);
+    for (let j = 0; j < G; j++) {
+      for (let i = 0; i < G; i++) {
+        const x0 = Math.floor(i * cellW), y0 = Math.floor(j * cellH);
+        const x1 = Math.floor((i + 1) * cellW) - 1, y1 = Math.floor((j + 1) * cellH) - 1;
+        cells[j * G + i] = rectSum(x0, y0, x1, y1) / cellArea;
+      }
+    }
+    const surf = new Uint8Array(gridN);
+    for (let c = 0; c < gridN; c++) if (cells[c] >= SCREEN_CELL_DENSITY) surf[c] = 1;
+
+    // 4. 8-connected components of surface cells; the largest = the screen.
+    const clabels = new Int32Array(gridN); clabels.fill(-1);
+    const cstack = new Int32Array(gridN);
+    const comps = [];
+    for (let cs = 0; cs < gridN; cs++) {
+      if (!surf[cs] || clabels[cs] !== -1) continue;
+      const lid = comps.length;
+      let sp = 0, cnt = 0, minI = G, minJ = G, maxI = -1, maxJ = -1;
+      cstack[sp++] = cs; clabels[cs] = lid;
+      while (sp > 0) {
+        const p = cstack[--sp];
+        const pi = p % G, pj = (p / G) | 0;
+        cnt++;
+        if (pi < minI) minI = pi; if (pi > maxI) maxI = pi;
+        if (pj < minJ) minJ = pj; if (pj > maxJ) maxJ = pj;
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            if (di === 0 && dj === 0) continue;
+            const ni = pi + di, nj = pj + dj;
+            if (ni < 0 || ni >= G || nj < 0 || nj >= G) continue;
+            const np = nj * G + ni;
+            if (surf[np] && clabels[np] === -1) { clabels[np] = lid; cstack[sp++] = np; }
+          }
+        }
+      }
+      comps.push({ cnt: cnt, minI: minI, minJ: minJ, maxI: maxI, maxJ: maxJ });
+    }
+    if (comps.length === 0) continue;
+
+    // Merge cell blocks that sit in the same column band and are close
+    // vertically — a screen whose content splits its surface into stacked
+    // blocks (e.g. top/bottom halves of a phone screen) is reconstructed here.
+    const groups = [];
+    for (const cb of comps) {
+      let added = false;
+      for (const g of groups) {
+        const colOverlap = Math.min(cb.maxI, g.maxI) - Math.max(cb.minI, g.minI) + 1;
+        const minCols = Math.min(cb.maxI - cb.minI, g.maxI - g.minI) + 1;
+        if (colOverlap >= minCols - 1) {               // same column band
+          const gap = cb.minJ > g.maxJ ? (cb.minJ - g.maxJ - 1) : (g.minJ - cb.maxJ - 1);
+          if (gap <= SCREEN_MERGE_GAP_CELLS) {
+            g.cnt += cb.cnt;
+            g.minI = Math.min(g.minI, cb.minI); g.maxI = Math.max(g.maxI, cb.maxI);
+            g.minJ = Math.min(g.minJ, cb.minJ); g.maxJ = Math.max(g.maxJ, cb.maxJ);
+            added = true;
+            break;
+          }
+        }
+      }
+      if (!added) groups.push({ cnt: cb.cnt, minI: cb.minI, minJ: cb.minJ, maxI: cb.maxI, maxJ: cb.maxJ });
+    }
+    groups.sort(function (a, b) { return b.cnt - a.cnt; });
+    const c = groups[0];
+    if (c.cnt < 3) continue;                          // needs a real cell block
+
+    // 5. Screen gates (pixel bbox of the cell block).
+    const minX = Math.floor(c.minI * cellW), maxX = Math.floor((c.maxI + 1) * cellW) - 1;
+    const minY = Math.floor(c.minJ * cellH), maxY = Math.floor((c.maxJ + 1) * cellH) - 1;
+    const bw = maxX - minX + 1, bh = maxY - minY + 1;
+    const boxArea = bw * bh;
+    if (boxArea < SCREEN_MIN_AREA_FRAC * total) continue;
+    if (bw === w && bh === h) continue;
+    const aspect = bh / bw;
+    if (aspect < SCREEN_MIN_ASPECT || aspect > SCREEN_MAX_ASPECT) continue;
+    const colorCount = rectSum(minX, minY, maxX, maxY);
+    if (colorCount / boxArea < SCREEN_FILL_MIN) continue;
+
+    // The surface must be surrounded by a DIFFERENT color: if the band just
+    // outside its bbox is the same color as its interior, it's an interior
+    // island (e.g. the white fill inside a card's border ring), not a screen.
+    // Compare ACTUAL colors (not the quantized bucket) to avoid quantization bias.
+    const surround = sampleSurroundColor(data, w, h, minX, minY, maxX, maxY);
+    const interior = sampleDominantColor(data, w, h, minX, minY, maxX, maxY);
+    if (surround && interior) {
+      const sd = Math.sqrt((interior.r - surround.r) * (interior.r - surround.r) + (interior.g - surround.g) * (interior.g - surround.g) + (interior.b - surround.b) * (interior.b - surround.b));
+      if (sd < SCREEN_COLOR_DIFF) continue;
+    }
+
+    const cand = {
+      x: Math.round(minX / scale),
+      y: Math.round(minY / scale),
+      w: Math.round(bw / scale),
+      h: Math.round(bh / scale),
+      area: boxArea / (scale * scale),
+      fillRatio: 0.30,                       // hollow → refineKind can FRAME it
+      borderRatio: 0,
+      hollow: true
+    };
+    if (overlapsAnyBox(cand, boxes, SCREEN_COLOR_IOU)) continue;
+    if (overlapsAnyBox(cand, results, SCREEN_COLOR_IOU)) continue;
+    results.push(cand);
+  }
+  return results;
 }
 
 /* =================================================================
@@ -787,5 +1306,14 @@ module.exports = {
   isReady,
   decodeImage,
   loadImageData,
-  buildTranscript
+  buildTranscript,
+  // Test hooks (pure/deterministic — drive layout without OCR).
+  _findBoxes: findBoxes,
+  _classifyAndAttach: classifyAndAttach,
+  _renderTranscript: renderTranscript,
+  _screenEdgeMap: screenEdgeMap,
+  _findScreenOutlines: findScreenOutlines,
+  _findColorScreens: findColorScreens,
+  _sampleSurroundColor: sampleSurroundColor,
+  _downscaleImageData: downscaleImageData
 };
