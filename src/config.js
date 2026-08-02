@@ -20,7 +20,9 @@ const MODELS = {
   shared: dirs.shared,
   det: 'det_infer.onnx',
   rec: 'rec_infer.onnx',
-  dict: 'ppocrv5_dict.txt'
+  dict: 'ppocrv5_dict.txt',
+  mobileclip: 'mobileclip-vision.onnx',
+  mobileclipLabels: 'mobileclip-labels.json'
 };
 
 /* Resolve a model file by short key ('det' | 'rec' | 'dict')

@@ -54,19 +54,30 @@ Then any agent can call the `decode_screenshot` tool with a file path and get th
 
 ### Model files
 
-The ~21 MB PaddleOCR models are **not** bundled in the npm package. They're resolved in this order:
+The PaddleOCR models (~21 MB) are resolved in this order:
 
 1. `SCREENCYE_MODEL_DIR` env var (explicit override)
 2. `<install>/models/` (drop the files here to bundle)
 3. A sibling `screenshot-reader/models/` folder (shared dev copy)
 
-Grab the models from the [browser project](https://github.com/PaddlePaddle/PP-OCRv5_mobile_det_onnx) (det) and [rec](https://github.com/PaddlePaddle/PP-OCRv5_mobile_rec_onnx) + the [ppocrv5_dict.txt](https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/ppocrv5_dict.txt).
+Grab the OCR models from the [browser project](https://github.com/PaddlePaddle/PP-OCRv5_mobile_det_onnx) (det) and [rec](https://github.com/PaddlePaddle/PP-OCRv5_mobile_rec_onnx) + the [ppocrv5_dict.txt](https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/ppocrv5_dict.txt).
+
+**MobileCLIP2-S2 (semantic tagger for `describe_screenshot`)** is bundled in `models/` (fp16, ~68 MB — the file that ships with this repo on GitHub):
+- `mobileclip-vision.onnx` — the vision encoder (256×256 input → 512-d embedding)
+- `mobileclip-labels.json` — precomputed label embeddings (no tokenizer/text model needed at runtime)
+
+The label list lives in `scripts/build_labels.py` (one-time build: tokenizes labels and runs the MobileCLIP text encoder; needs the text ONNX, ~250 MB, from [RuteNL/MobileCLIP2-S2-OpenCLIP-ONNX](https://huggingface.co/RuteNL/MobileCLIP2-S2-OpenCLIP-ONNX)). The `screenshot-reader/models/` copy is an int8 variant (~38 MB) for the browser app's IONOS 50 MB/file limit.
+
+**Bigger models (S3/S4, higher zero-shot accuracy) are NOT bundled** — their fp16 exports exceed GitHub's 100 MB/file limit, so they can't ship in this repo. Power users can point `SCREENCYE_MODEL_DIR` at an S3/S4 `mobileclip-vision.onnx` (from [RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX](https://huggingface.co/RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX) or [S4](https://huggingface.co/RuteNL/MobileCLIP2-S4-OpenCLIP-ONNX)) for a ~3–5% zero-shot accuracy boost.
 
 ## Tools
 
 | Tool | Input | Output |
 |---|---|---|
 | `decode_screenshot` | `path` (absolute file path) | Structured transcript (words, coords, colors, spacing) |
+| `describe_screenshot` | `path` (absolute file path) | Top semantic labels (MobileCLIP2-S2: "login page", "dashboard", "map", "game", …) |
+
+`describe_screenshot` classifies against ~96 broad labels (UI types, games, photos, documents, charts, code, media, abstract). If no label clears the confidence threshold it appends a **LOW CONFIDENCE** warning instead of forcing a guess — so a blind model isn't misled while debugging. The label list lives in `scripts/build_labels.py`.
 
 ## Privacy
 

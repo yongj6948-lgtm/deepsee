@@ -19,6 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { modelPath } = require('./config.js');
 const decoder = require('./decoder.js');
+const mobileclip = require('./mobileclip.js');
 
 /* ── Resolve models ─────────────────────────────────────────── */
 function resolveModels() {
@@ -28,7 +29,8 @@ function resolveModels() {
   if (!det || !rec || !dict) {
     throw new Error('Model files not found. Set SCREENCYE_MODEL_DIR or place models in ./models/.');
   }
-  return { det, rec, dict };
+  // MobileCLIP is OPTIONAL (semantic tagger) — resolves to undefined if absent.
+  return { det, rec, dict, mobileclip: modelPath('mobileclip'), mobileclipLabels: modelPath('mobileclipLabels') };
 }
 
 const models = resolveModels();
@@ -64,6 +66,44 @@ server.tool(
       return { content: [{ type: 'text', text: transcript }] };
     } catch (err) {
       return { content: [{ type: 'text', text: 'Error decoding screenshot: ' + (err.message || err) }] };
+    }
+  }
+);
+
+/* ── MobileCLIP semantic tagger (lazy — only if models present) ── */
+let mcInitPromise = null;
+function ensureMobileclip() {
+  if (!models.mobileclip || !models.mobileclipLabels) {
+    return Promise.reject(new Error('MobileCLIP models not found — drop mobileclip-vision.onnx + mobileclip-labels.json into models/'));
+  }
+  if (!mcInitPromise) {
+    mcInitPromise = mobileclip.init(models.mobileclip, models.mobileclipLabels);
+  }
+  return mcInitPromise;
+}
+
+server.tool(
+  'describe_screenshot',
+  'Semantic label of what KIND of screen/image this is (login page, dashboard, map, chart, photo, phone screen, ...). ' +
+    'Most useful when a screenshot has little or no text, or to sanity-check the decode. Runs MobileCLIP2-S2 on CPU (~ms) alongside the OCR models.',
+  { path: z.string().describe('Absolute filesystem path to the screenshot image (PNG, JPG, WebP)') },
+  async ({ path: imagePath }) => {
+    if (!fs.existsSync(imagePath)) {
+      return { content: [{ type: 'text', text: 'Error: file not found: ' + imagePath }] };
+    }
+    try {
+      await ensureMobileclip();
+      const emb = await mobileclip.embed(path.resolve(imagePath));
+      const top = mobileclip.topLabels(emb, 5);
+      let text = top.map(function (t, i) { return (i + 1) + '. ' + t.label + ' (score ' + t.score.toFixed(3) + ')'; }).join('\n');
+      // Confidence gate: for the blind-model debugging use case a wrong confident
+      // label is worse than admitting uncertainty.
+      if (top.length > 0 && top[0].score < mobileclip.LOW_CONF_THRESHOLD) {
+        text += '\n\n⚠ LOW CONFIDENCE — the image may not match any known category. Treat the labels as a weak hint; rely on the structure decode for exact detail.';
+      }
+      return { content: [{ type: 'text', text: 'Top semantic labels:\n' + text }] };
+    } catch (err) {
+      return { content: [{ type: 'text', text: 'Error describing screenshot: ' + (err.message || err) }] };
     }
   }
 );
