@@ -1,0 +1,5 @@
+# ONNX models are byte-exact binaries — never let git apply EOL conversion.
+# (int8 quantized models can contain no NUL in the first 8KB, so git's
+# binary heuristic misclassifies them as text and would corrupt them
+# under core.autocrlf on checkout.)
+*.onnx binary
