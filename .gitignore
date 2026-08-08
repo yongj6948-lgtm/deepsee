@@ -6,4 +6,5 @@ test/fixtures/*.png
 
 # Internal docs — stay on disk for local sessions, never pushed to GitHub
 STATE.md
+CODEMAP.md
 docs/superpowers/
