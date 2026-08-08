@@ -1,6 +1,6 @@
 # screencye — eyes for text-only LLMs
 
-**Decode a screenshot into exact structured text so any text-only model can "see" your UI — words, coordinates, sizes, colors, spacing. Pure-code CV + OCR. Zero VRAM. No vision model. Deterministic.**
+**Decode a screenshot into exact structured text so any text-only model can "see" your UI — words, coordinates, sizes, colors, spacing. Pure-code CV + OCR. Zero VRAM. Deterministic.**
 
 Give a screenshot to a text-only model (DeepSeek, a local model, Claude Code, Hermes, etc.) and it can now reason about exact positions instead of hallucinating them — because the screenshot was decoded into a transcript with precise measurements.
 
@@ -19,7 +19,7 @@ Here's a text-only agent (Hermes) using both tools — `decode_screenshot` + `de
 
 - **Text-only models can't see screenshots** — and describing a misaligned button in words is error-prone.
 - **Vision models steal VRAM** — a local vision encoder (like Gemma's `--mmproj`) lives in GPU memory even when idle, squeezing the text model.
-- **screencye runs on CPU** — the decode is pure code + PaddleOCR via ONNX Runtime. No GPU, no vision model, no network. All your VRAM stays with your text model.
+- **screencye runs on CPU** — the decode is pure code + PaddleOCR via ONNX Runtime. No GPU, no network, no vision model in the reading path. All your VRAM stays with your text model. (The optional `describe_screenshot` tool uses a tiny on-CPU MobileCLIP2-S2 classifier — still zero VRAM.)
 
 ## Skip the vision encoder — save the VRAM
 
@@ -122,10 +122,9 @@ node test/mcp-handshake-test.mjs   # full MCP handshake
 
 ## Roadmap
 
-- v0.2 — `decode_screenshot_base64` (pass image bytes directly)
-- v0.3 — optional `describe_screenshot` tool bridging a local vision model for semantic meaning
-- v0.4 — screenshot capture helper
+- `decode_screenshot_base64` — pass image bytes directly (no temp file needed)
+- screenshot capture helper
 
 ---
 
-Powered by [VELOCE AI Accelerator](https://veloceidm.com) · ONNX Runtime · PaddleOCR
+Powered by VELOCE AI Accelerator · ONNX Runtime · PaddleOCR
