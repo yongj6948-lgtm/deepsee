@@ -54,7 +54,7 @@ function init(modelPaths, onProgress) {
         enableCpuMemArena: true
         // onnxruntime-node defaults to CPU EP — no wasm flag needed.
       };
-      onProgress && onProgress('Loading OCR engine…', 5);
+      onProgress && onProgress('Loading AI engine…', 5);
       return esearchOCR.init({
         detPath: modelPaths.det,
         recPath: modelPaths.rec,
@@ -63,7 +63,7 @@ function init(modelPaths, onProgress) {
         ortOption: ortOption,
         onProgress: function (phase, cur, total) {
           const pct = phase === 'det' ? 40 + (cur / total) * 30 : 70 + (cur / total) * 30;
-          onProgress && onProgress('Reading text…', Math.round(pct));
+          onProgress && onProgress('Decoding screenshot…', Math.round(pct));
         }
       }).then(function () {
         isInit = true;
