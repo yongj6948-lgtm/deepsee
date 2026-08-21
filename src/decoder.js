@@ -19,8 +19,14 @@ const path = require('path');
 const ort = require('onnxruntime-node');
 // The UMD build of esearch-ocr exports nothing under require() in Node 22
 // (its package.json "exports" maps require→UMD, which is broken there), while
-// the ESM build works via Node's require(esm). Resolve it by absolute path.
-const esearchOCR = require(path.join(__dirname, '..', 'node_modules', '@oovz', 'esearch-ocr', 'dist', 'eSearchOCR.es.js'));
+// the ESM build works via Node's require(esm). Resolve the package through
+// Node's own module resolution — this handles npm hoisting, so a global
+// install (where the dep sits at the top-level node_modules, not nested under
+// this package) still finds it — then load the ESM build by path to bypass
+// the broken require→UMD mapping.
+const esearchOCRMain = require.resolve('@oovz/esearch-ocr', { paths: [__dirname] }); // → <pkg>/dist/eSearchOCR.umd.js
+const esearchOCRPkgDir = path.dirname(path.dirname(esearchOCRMain));               // → <pkg>/
+const esearchOCR = require(path.join(esearchOCRPkgDir, 'dist', 'eSearchOCR.es.js'));
 const { createCanvas, loadImage, ImageData } = require('canvas');
 
 // esearch-ocr needs its env wired for Node (no DOM). It invokes these as
