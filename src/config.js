@@ -8,9 +8,9 @@ const path = require('path');
    3. The browser project's models/ (shared, avoids duplicating 21 MB) */
 
 function resolveModelDir() {
-  if (process.env.SCREENCYE_MODEL_DIR) return process.env.SCREENCYE_MODEL_DIR;
-  const own = path.join(__dirname, '..', 'models');
-  const shared = path.join(__dirname, '..', '..', 'screenshot-reader', 'models');
+  const explicit = process.env.SCREENCYE_MODEL_DIR;
+  const own = explicit || path.join(__dirname, '..', 'models');
+  const shared = explicit || path.join(__dirname, '..', '..', 'screenshot-reader', 'models');
   return { own, shared };
 }
 

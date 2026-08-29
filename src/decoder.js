@@ -28,10 +28,6 @@ const esearchOCRMain = require.resolve('@oovz/esearch-ocr', { paths: [__dirname]
 const esearchOCRPkgDir = path.dirname(path.dirname(esearchOCRMain));               // → <pkg>/
 const esearchOCR = require(path.join(esearchOCRPkgDir, 'dist', 'eSearchOCR.es.js'));
 const { createCanvas, loadImage, ImageData } = require('canvas');
-
-// esearch-ocr needs its env wired for Node (no DOM). It invokes these as
-// plain functions (e.g. canvasFactory(w,h), imageDataFactory(data,w,h)),
-// so wrap the canvas pkg's classes/constructors in callable factories.
 esearchOCR.setOCREnv({
   canvas: function (w, h) { return createCanvas(w, h); },
   imageData: function (data, w, h) { return new ImageData(data, w, h); }
@@ -41,6 +37,15 @@ esearchOCR.setOCREnv({
 const MAX_ANALYSIS_DIM = 1400;
 const MIN_BOX_AREA_RATIO = 0.0025;
 const COLOR_TOL = 14;
+
+/* ── Tiled OCR limits (R4) ─────────────────────────────────────
+   OCR runs on the FULL-res image; but for very large screenshots the full-res
+   pass is slow and small text gets fragile. We tile: split into overlapping
+   blocks of at most TILE_MAX on a side, OCR each block, then merge (dedupe on
+   box overlap) back to original coordinates. Tiles report via meta.tiles. */
+const TILE_MAX = 1600;
+const TILE_OVERLAP = 40;
+const TILE_MAX_COUNT = 16; // hard cap: 4×4 blocks max
 
 let isInit = false;
 let initPromise = null;
@@ -96,13 +101,133 @@ async function loadImageData(imagePath) {
 
 /* =================================================================
    DECODE — run the full 5-pass pipeline on an image file
+   Returns { text, meta } — meta carries performance/quality signals (R3):
+     input_size, decode_ms, ocr_ms, layout_ms, model,
+     ocr_confidence_avg, tiles
    ================================================================= */
-async function decodeImage(imagePath, modelPaths, onProgress) {
+async function decodeImageDetailed(imagePath, modelPaths, onProgress) {
   await init(modelPaths, onProgress);
+  const t0 = Date.now();
   const imgData = await loadImageData(imagePath);
-  const result = await esearchOCR.ocr(imgData);
-  const lines = result.src || result;
-  return buildTranscript(lines, imgData);
+  const loadMs = Date.now() - t0;
+
+  const t1 = Date.now();
+  const ocrResult = await ocrTiled(imgData);
+  const lines = ocrResult.src || ocrResult;
+  const ocrMs = Date.now() - t1;
+
+  const t2 = Date.now();
+  const text = buildTranscript(lines, imgData);
+  const layoutMs = Date.now() - t2;
+  const totalMs = Date.now() - t0;
+
+  const confs = (lines || [])
+    .filter(function (l) { return l && l.text && l.text.trim() && typeof l.mean === 'number' && l.mean > 0; })
+    .map(function (l) { return l.mean; });
+  const ocrConfAvg = confs.length > 0
+    ? confs.reduce(function (a, b) { return a + b; }, 0) / confs.length
+    : 0;
+
+  return {
+    text: text,
+    meta: {
+      input_size: { width: imgData.width, height: imgData.height },
+      decode_ms: Math.round(totalMs),
+      ocr_ms: Math.round(ocrMs),
+      layout_ms: Math.round(layoutMs),
+      load_ms: Math.round(loadMs),
+      model: 'paddleocr-v5-mobile',
+      ocr_confidence_avg: Number(ocrConfAvg.toFixed(4)),
+      tiles: ocrResult.tiles || 1
+    }
+  };
+}
+
+/* Backwards-compatible: decodeImage returns just the transcript text. */
+async function decodeImage(imagePath, modelPaths, onProgress) {
+  const r = await decodeImageDetailed(imagePath, modelPaths, onProgress);
+  return r.text;
+}
+
+/* =================================================================
+   OCR — full image, or tiled for very large screenshots (R4)
+   ================================================================= */
+async function ocrTiled(imgData) {
+  const w = imgData.width, h = imgData.height;
+  if (Math.max(w, h) <= TILE_MAX) {
+    const r = await esearchOCR.ocr(imgData);
+    r.tiles = 1;
+    return r;
+  }
+
+  const strideW = Math.ceil(w / Math.min(Math.ceil(w / TILE_MAX), TILE_MAX_COUNT));
+  const strideH = Math.ceil(h / Math.min(Math.ceil(h / TILE_MAX), TILE_MAX_COUNT));
+  const nx = Math.ceil(w / strideW);
+  const ny = Math.ceil(h / strideH);
+  const tileW = strideW + TILE_OVERLAP;
+  const tileH = strideH + TILE_OVERLAP;
+
+  const all = [];
+  let tiles = 0;
+  for (let ty = 0; ty < ny; ty++) {
+    for (let tx = 0; tx < nx; tx++) {
+      const x = Math.max(0, Math.round(tx * strideW - (tx > 0 ? TILE_OVERLAP / 2 : 0)));
+      const y = Math.max(0, Math.round(ty * strideH - (ty > 0 ? TILE_OVERLAP / 2 : 0)));
+      const tw = Math.min(tileW, w - x);
+      const th = Math.min(tileH, h - y);
+      if (tw < 64 || th < 64) continue;
+      const tile = cropImageData(imgData, x, y, tw, th);
+      const r = await esearchOCR.ocr(tile);
+      const tileLines = r.src || r;
+      (tileLines || []).forEach(function (l) {
+        if (!l || !l.text) return;
+        const box = (l.box || []).map(function (p) { return [p[0] + x, p[1] + y]; });
+        if (box.length < 4) return;
+        if (hasOverlap(all, box)) return; // dedupe overlap regions
+        all.push({ text: l.text, mean: l.mean, box: box });
+      });
+      tiles++;
+    }
+  }
+  return { src: all, tiles: tiles };
+}
+
+/* Copy a sub-rectangle of an ImageData (canvas pkg ImageData). */
+function cropImageData(src, x, y, w, h) {
+  const out = new ImageData(w, h);
+  const sw = src.width;
+  for (let yy = 0; yy < h; yy++) {
+    const si = ((y + yy) * sw + x) * 4;
+    const di = yy * w * 4;
+    out.data.set(src.data.subarray(si, si + w * 4), di);
+  }
+  return out;
+}
+
+/* Intersection-over-smaller-area of two 4-point boxes (order-agnostic). */
+function rectsOverlapRatio(a, b) {
+  const ax = a.map(function (p) { return p[0]; });
+  const ay = a.map(function (p) { return p[1]; });
+  const bx = b.map(function (p) { return p[0]; });
+  const by = b.map(function (p) { return p[1]; });
+  const maxAx = Math.max.apply(null, ax), minAx = Math.min.apply(null, ax);
+  const maxAy = Math.max.apply(null, ay), minAy = Math.min.apply(null, ay);
+  const maxBx = Math.max.apply(null, bx), minBx = Math.min.apply(null, bx);
+  const maxBy = Math.max.apply(null, by), minBy = Math.min.apply(null, by);
+  const iw = Math.min(maxAx, maxBx) - Math.max(minAx, minBx);
+  const ih = Math.min(maxAy, maxBy) - Math.max(minAy, minBy);
+  if (iw <= 0 || ih <= 0) return 0;
+  const inter = iw * ih;
+  const areaA = Math.max(1, (maxAx - minAx) * (maxAy - minAy));
+  const areaB = Math.max(1, (maxBx - minBx) * (maxBy - minBy));
+  return inter / Math.min(areaA, areaB);
+}
+
+function hasOverlap(list, box) {
+  for (let i = 0; i < list.length; i++) {
+    if (rectsOverlapRatio(list[i].box, box) > 0.45) return true;
+  }
+  return false;
 }
 
 /* =================================================================
@@ -1311,6 +1436,7 @@ module.exports = {
   init,
   isReady,
   decodeImage,
+  decodeImageDetailed,
   loadImageData,
   buildTranscript,
   // Test hooks (pure/deterministic — drive layout without OCR).
