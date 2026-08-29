@@ -52,7 +52,7 @@ Deterministic: same screenshot → byte-identical transcript, every time.
 ### CLI (any agent or script)
 
 ```bash
-npm install -g github:veloce-ai-idm/deepsee
+npm install -g github:yongj6948-lgtm/deepsee
 screencye /path/to/screenshot.png
 ```
 
@@ -75,12 +75,11 @@ Then any agent can call the `decode_screenshot` tool with a file path and get th
 
 ### Deploy (models included)
 
-The OCR + MobileCLIP models are bundled in the npm tarball (~85 MB), so a global install is a complete deploy — no separate model download:
+All models (~92 MB) ship in the repo's `models/` folder, so installing from this repo or the upstream GitHub repo is a complete deploy — no separate model download:
 
 ```bash
-npm install -g .            # from this repo; installs `screencye` + `screencye-mcp`
-# or from a published version:
-# npm install -g screencye-mcp
+npm install -g .                                 # from this repo; installs `screencye` + `screencye-mcp`
+npm install -g github:yongj6948-lgtm/deepsee      # same, from the maintained fork
 ```
 
 Then register `screencye-mcp` (now on PATH) in any MCP client — Claude Code:
@@ -126,7 +125,7 @@ python3 /var/minis/screencye-cli.py upload /var/minis/browser/<session>/screensh
 
 ### Model files
 
-All models ship in the repo's `models/` folder (~91 MB total, each file under GitHub's 100 MB limit):
+All models ship in the repo's `models/` folder (~92 MB total, each file under GitHub's 100 MB limit):
 
 - `det_infer.onnx`, `rec_infer.onnx`, `ppocrv5_dict.txt` — PaddleOCR v5 (reads every word)
 - `mobileclip-vision.onnx` (fp16, 73 MB) + `mobileclip-labels.json` — MobileCLIP2-S2 semantic tagger
@@ -177,17 +176,19 @@ Everything runs locally. The screenshot never leaves the machine — no API call
 ## Test
 
 ```bash
-npm test        # parity + structure + determinism on golden screenshots
+npm test               # structure + determinism on bundled fixtures (self-contained)
+npm run test:frame     # pure layout pipeline: FRAME detection on synthetic screens
 node test/mcp-handshake-test.mjs   # full MCP handshake
-npm run test:http    # HTTP transport + /upload concurrency (8 same-name uploads, atomics, 400s, tools)
-npm run test:bridge  # host-side bridge: local path → auto-upload → remote decode + cache
+npm run test:http      # HTTP transport + /upload concurrency (8 same-name uploads, atomics, 400s, tools)
+npm run test:bridge    # host-side bridge: local path → auto-upload → remote decode + cache
 ```
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `src/decoder.js` | The 5-pass deterministic decoder (Node port) |
+| `src/decoder.js` | The 5-pass deterministic decoder (pure-code CV + OCR) |
+| `src/mobileclip.js` | MobileCLIP2-S2 semantic tagger (`describe_screenshot`) |
 | `src/server.mjs` | MCP server — stdio / HTTP (`/mcp` + streaming `/upload`) |
 | `src/bridge.mjs` | Host-side companion: reads your local files, uploads to a remote server, forwards MCP |
 | `src/cli.js` | CLI entry (`screencye image.png`) |
