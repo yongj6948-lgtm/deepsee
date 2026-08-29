@@ -7,7 +7,7 @@
    - emulator.png (dark page + thin gradient ring + light screen) must yield a
      hollow FRAME box around the screen, with the fake text nested under it.
    - card.png / toolbar.png are negative controls: no synthesized hollow box.
-   - Lockstep: both decoders must carry the same screen-outline code. */
+   - Screen-outline code structure is verified in the decoder source. */
 const path = require('path');
 const fs = require('fs');
 const { makeFixtures } = require('./fixtures/makeFixtures');
@@ -73,13 +73,11 @@ const fakeItems = [
   check(!tbBoxes.some(function (b) { return b.fillRatio === 0.30; }),
     'toolbar.png adds no synthesized screen box');
 
-  console.log('\n── lockstep (SYNC RULE) ──');
+  console.log('\n── screen-outline code structure ──');
   const nodeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'decoder.js'), 'utf8');
-  const browserSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'screenshot-reader', 'decode.js'), 'utf8');
   ['findScreenOutlines', 'screenEdgeMap', 'SCREEN_EDGE_T', 'SCREEN_MIN_AREA_FRAC',
     'SCREEN_VCOVER', 'SCREEN_RUN_GAP'].forEach(function (marker) {
-    check(nodeSrc.indexOf(marker) !== -1 && browserSrc.indexOf(marker) !== -1,
-      'both decoders contain "' + marker + '"');
+    check(nodeSrc.indexOf(marker) !== -1, 'decoder.js contains "' + marker + '"');
   });
 
   console.log('\n══════════════════════════════════');

@@ -9,7 +9,8 @@
      P4  Element inference (pure geometry heuristics)
      P5  Transcript assembly (coords, spacing, alignment, colors)
 
-   Logic is ported 1:1 from the browser decoder (screenshot-reader/decode.js);
+   Screen-outline detection (hollow frame synthesis) is internally consistent
+   with the decode pipeline; the layout/classification steps below drive it.
    only the pixel-I/O layer differs (canvas pkg instead of DOM, onnxruntime-node
    instead of WASM, fs instead of fetch).
    ================================================================= */

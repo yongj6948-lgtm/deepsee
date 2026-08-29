@@ -4,20 +4,16 @@ const path = require('path');
 /* Model paths — resolvable at runtime.
    Priority:
    1. SCREENCYE_MODEL_DIR env var (explicit override)
-   2. <project>/models/ (bundled copy, if present)
-   3. The browser project's models/ (shared, avoids duplicating 21 MB) */
+   2. <project>/models/ (bundled copy) */
 
 function resolveModelDir() {
   const explicit = process.env.SCREENCYE_MODEL_DIR;
-  const own = explicit || path.join(__dirname, '..', 'models');
-  const shared = explicit || path.join(__dirname, '..', '..', 'screenshot-reader', 'models');
-  return { own, shared };
+  return { own: explicit || path.join(__dirname, '..', 'models') };
 }
 
 const dirs = resolveModelDir();
 const MODELS = {
   own: dirs.own,
-  shared: dirs.shared,
   det: 'det_infer.onnx',
   rec: 'rec_infer.onnx',
   dict: 'ppocrv5_dict.txt',
@@ -30,8 +26,7 @@ const MODELS = {
 function modelPath(keyOrFile) {
   const filename = MODELS[keyOrFile] || keyOrFile;
   const candidates = [
-    path.join(MODELS.own, filename),
-    path.join(MODELS.shared, filename)
+    path.join(MODELS.own, filename)
   ];
   return candidates.find(fsExists);
 }

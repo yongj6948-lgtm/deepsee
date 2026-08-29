@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(__dirname, '..', 'src', 'server.mjs');
-const IMAGE = process.argv[2] || path.join(__dirname, '..', '..', 'screenshot-reader', 'test', 'out', 'fixture-login.png');
+const IMAGE = process.argv[2] || path.join(__dirname, 'fixtures', 'card.png');
 
 const child = spawn(process.execPath, [SERVER], { stdio: ['pipe', 'pipe', 'inherit'] });
 let buf = '';

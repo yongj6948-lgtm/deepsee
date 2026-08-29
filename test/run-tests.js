@@ -12,18 +12,14 @@ const { modelPath } = require('../src/config');
 const decoder = require('../src/decoder');
 
 const GOLDEN = [
-  golden('login', 'fixture-login.png', 'card.png', ['BUTTON', 'INPUT', 'Welcome back', 'Log in']),
-  golden('dashboard', 'fixture-dashboard.png', 'toolbar.png', ['CARD', 'Analytics', 'Revenue'])
+  golden('login', 'card.png'),
+  golden('dashboard', 'toolbar.png')
 ];
 
-/* Prefer the sibling screenshot-reader golden screenshots (full text assertions);
-   fall back to this repo's own fixtures (structural checks only, since the
-   synthetic images don't contain the golden transcripts' words). */
-function golden(name, siblingName, localName, mustContain) {
-  const sibling = path.join(__dirname, '..', '..', 'screenshot-reader', 'test', 'out', siblingName);
-  const local = path.join(__dirname, 'fixtures', localName);
-  const useGolden = fs.existsSync(sibling);
-  return { name, img: useGolden ? sibling : local, mustContain: useGolden ? mustContain : [] };
+/* Self-contained: use this repo's own synthetic fixtures (structural checks —
+   the synthetic images don't contain real-world transcript words). */
+function golden(name, localName) {
+  return { name, img: path.join(__dirname, 'fixtures', localName), mustContain: [] };
 }
 
 const models = {
